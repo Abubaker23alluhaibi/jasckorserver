@@ -63,6 +63,18 @@ app.use(cors({
 
 app.use(express.json());
 
+// Add request logging middleware (for debugging)
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api')) {
+    console.log(`${req.method} ${req.path}`, {
+      origin: req.headers.origin,
+      'content-type': req.headers['content-type'],
+      body: req.method === 'POST' ? (req.body.username ? { username: req.body.username, hasPassword: !!req.body.password } : 'no body') : undefined
+    });
+  }
+  next();
+});
+
 // Firebase configuration
 const firebaseConfig = {
   apiKey: process.env.FIREBASE_API_KEY,
@@ -369,6 +381,7 @@ app.post('/api/auth/init', async (req, res) => {
 // Login endpoint
 app.post('/api/auth/login', async (req, res) => {
   if (!db) {
+    console.error('❌ Login attempt failed: Firebase not initialized');
     return res.status(503).json({ 
       error: 'Firebase not initialized. Please check your Firebase configuration variables.',
       details: 'Missing or invalid Firebase environment variables'
@@ -377,6 +390,8 @@ app.post('/api/auth/login', async (req, res) => {
   
   try {
     const { username, password } = req.body;
+
+    console.log('🔐 Login attempt:', { username: username || 'missing', hasPassword: !!password });
 
     if (!username || !password) {
       return res.status(400).json({ error: 'Username and password are required' });
@@ -389,16 +404,27 @@ app.post('/api/auth/login', async (req, res) => {
 
     // If no users found in database, initialize default users
     if (querySnapshot.empty) {
+      console.log('📝 No users found, initializing default users...');
       const allUsersSnapshot = await getDocs(usersRef);
       if (allUsersSnapshot.empty) {
-        await initializeDefaultUsers();
-        // Try again after initialization
-        q = query(usersRef, where('username', '==', username));
-        querySnapshot = await getDocs(q);
+        try {
+          await initializeDefaultUsers();
+          console.log('✅ Default users initialized');
+          // Try again after initialization
+          q = query(usersRef, where('username', '==', username));
+          querySnapshot = await getDocs(q);
+        } catch (initError) {
+          console.error('❌ Error initializing default users:', initError);
+          return res.status(500).json({ 
+            error: 'Failed to initialize users',
+            details: initError.message || 'Unknown error during initialization'
+          });
+        }
       }
     }
 
     if (querySnapshot.empty) {
+      console.log('❌ Login failed: User not found:', username);
       return res.status(401).json({ error: 'Invalid username or password' });
     }
     
@@ -407,10 +433,19 @@ app.post('/api/auth/login', async (req, res) => {
 
     // Check password (plain text comparison for now, can be upgraded to bcrypt)
     if (user.password !== password) {
+      console.log('❌ Login failed: Invalid password for user:', username);
       return res.status(401).json({ error: 'Invalid username or password' });
     }
 
     // Generate JWT token
+    if (!JWT_SECRET_FINAL || JWT_SECRET_FINAL === 'your-secret-key-change-in-production') {
+      console.error('❌ JWT_SECRET is not set or using default value');
+      return res.status(500).json({ 
+        error: 'Server configuration error',
+        details: 'JWT secret is not properly configured'
+      });
+    }
+
     const token = jwt.sign(
       {
         id: user.id,
@@ -422,14 +457,34 @@ app.post('/api/auth/login', async (req, res) => {
       { expiresIn: '7d' } // Token expires in 7 days
     );
 
+    console.log('✅ Login successful for user:', username, 'role:', user.role);
+
     // Return user data (without password) and token
     res.json({
       token,
       user: sanitizeUser(user),
     });
   } catch (error) {
-    console.error('Error during login:', error);
-    res.status(500).json({ error: 'Login failed' });
+    console.error('❌ Error during login:', error);
+    console.error('Error stack:', error.stack);
+    
+    // Check if it's a Firebase permission error
+    if (error.code === 7 || error.message?.includes('PERMISSION_DENIED') || error.message?.includes('Firestore API')) {
+      return res.status(503).json({ 
+        error: 'Firebase Firestore API غير مفعّل. يرجى تفعيل Cloud Firestore API من Google Cloud Console.',
+        details: error.message 
+      });
+    }
+    
+    // Return more detailed error in development, generic in production
+    const errorDetails = process.env.NODE_ENV === 'production' 
+      ? 'Login failed. Please try again later.'
+      : error.message || 'Unknown error';
+    
+    res.status(500).json({ 
+      error: 'Login failed',
+      details: errorDetails
+    });
   }
 });
 
