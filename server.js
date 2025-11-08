@@ -15,9 +15,6 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware
 // CORS configuration
-// Check if we're in production (Railway sets PORT automatically, so we check for that or NODE_ENV)
-const isProduction = process.env.NODE_ENV === 'production' || process.env.RAILWAY_ENVIRONMENT || process.env.PORT;
-
 // Always include both production and development origins for safety
 const allowedOrigins = [
   'https://web-production-83e93.up.railway.app',
@@ -30,59 +27,38 @@ const allowedOrigins = [
 
 // Log allowed origins for debugging
 console.log('🌐 CORS Configuration:');
-console.log('   Environment:', isProduction ? 'production' : 'development');
 console.log('   Allowed Origins:', allowedOrigins);
 
-// CORS middleware with explicit OPTIONS handling
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  
-  // Handle preflight requests (OPTIONS)
-  if (req.method === 'OPTIONS') {
-    if (origin && allowedOrigins.includes(origin)) {
-      res.header('Access-Control-Allow-Origin', origin);
-      res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-      res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-      res.header('Access-Control-Allow-Credentials', 'true');
-      res.header('Access-Control-Max-Age', '86400'); // 24 hours
-      return res.sendStatus(200);
-    } else if (!origin) {
-      // Allow requests with no origin
-      return res.sendStatus(200);
-    } else {
-      console.warn('⚠️  CORS preflight blocked origin:', origin);
-      return res.status(403).json({ error: 'Not allowed by CORS' });
-    }
-  }
-  
-  // Handle regular requests
-  if (origin && allowedOrigins.includes(origin)) {
-    res.header('Access-Control-Allow-Origin', origin);
-    res.header('Access-Control-Allow-Credentials', 'true');
-  } else if (!origin) {
-    // Allow requests with no origin
-    res.header('Access-Control-Allow-Origin', '*');
-  }
-  
-  next();
-});
-
-// Also use cors middleware as backup
+// CORS middleware - handle all CORS including preflight
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) return callback(null, true);
+    // Allow requests with no origin (like mobile apps, Postman, or curl requests)
+    if (!origin) {
+      return callback(null, true);
+    }
     
+    // Check if origin is in allowed list
     if (allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
+      // Log blocked origin for debugging
       console.warn('⚠️  CORS blocked origin:', origin);
-      callback(new Error('Not allowed by CORS'));
+      console.warn('   Allowed origins:', allowedOrigins);
+      // Still allow it in development, but log it
+      if (process.env.NODE_ENV !== 'production') {
+        callback(null, true);
+      } else {
+        callback(new Error(`Not allowed by CORS. Origin: ${origin}`));
+      }
     }
   },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  exposedHeaders: ['Content-Type', 'Authorization'],
+  maxAge: 86400, // 24 hours
+  preflightContinue: false,
+  optionsSuccessStatus: 200
 }));
 
 app.use(express.json());
