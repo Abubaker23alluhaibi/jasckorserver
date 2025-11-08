@@ -18,7 +18,8 @@ const PORT = process.env.PORT || 3000;
 const allowedOrigins = process.env.NODE_ENV === 'production' 
   ? [
       'https://web-production-83e93.up.railway.app',
-      process.env.FRONTEND_URL || 'https://web-production-83e93.up.railway.app'
+      'https://josck-system.vercel.app',
+      process.env.FRONTEND_URL || 'https://josck-system.vercel.app'
     ].filter(Boolean)
   : ['http://localhost:5173', 'http://localhost:3000', 'http://127.0.0.1:5173'];
 
