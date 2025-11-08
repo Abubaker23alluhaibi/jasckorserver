@@ -14,13 +14,25 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Middleware
-// CORS configuration - allows all origins in production
+// CORS configuration
 const allowedOrigins = process.env.NODE_ENV === 'production' 
-  ? ['*'] // Allow all origins in production (you can specify your frontend domain later)
+  ? [
+      'https://web-production-83e93.up.railway.app',
+      process.env.FRONTEND_URL || 'https://web-production-83e93.up.railway.app'
+    ].filter(Boolean)
   : ['http://localhost:5173', 'http://localhost:3000', 'http://127.0.0.1:5173'];
 
 app.use(cors({
-  origin: allowedOrigins.includes('*') ? true : allowedOrigins,
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
@@ -37,9 +49,42 @@ const firebaseConfig = {
   appId: process.env.FIREBASE_APP_ID,
 };
 
+// Validate Firebase configuration
+const requiredFirebaseVars = [
+  'FIREBASE_API_KEY',
+  'FIREBASE_AUTH_DOMAIN',
+  'FIREBASE_PROJECT_ID',
+  'FIREBASE_STORAGE_BUCKET',
+  'FIREBASE_MESSAGING_SENDER_ID',
+  'FIREBASE_APP_ID'
+];
+
+const missingVars = requiredFirebaseVars.filter(varName => !process.env[varName]);
+
+if (missingVars.length > 0) {
+  console.error('❌ ERROR: Missing required Firebase environment variables:');
+  missingVars.forEach(varName => console.error(`   - ${varName}`));
+  console.error('\n⚠️  Please add these variables in Railway Dashboard > Variables');
+  if (process.env.NODE_ENV === 'production') {
+    console.error('⚠️  Server will continue but Firebase operations will fail!');
+  }
+}
+
 // Initialize Firebase
-const firebaseApp = initializeApp(firebaseConfig);
-const db = getFirestore(firebaseApp);
+let firebaseApp;
+let db;
+
+try {
+  firebaseApp = initializeApp(firebaseConfig);
+  db = getFirestore(firebaseApp);
+  console.log('✅ Firebase initialized successfully');
+} catch (error) {
+  console.error('❌ ERROR: Failed to initialize Firebase:', error.message);
+  if (process.env.NODE_ENV === 'production') {
+    console.error('⚠️  Please check your Firebase configuration variables');
+  }
+  // Don't exit - let the server start but Firebase operations will fail
+}
 
 // Collection names
 const COLLECTIONS = {
@@ -48,7 +93,12 @@ const COLLECTIONS = {
 };
 
 // JWT Secret (يجب أن يكون في .env في الإنتاج)
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET && process.env.NODE_ENV === 'production') {
+  console.error('❌ ERROR: JWT_SECRET is required in production!');
+  process.exit(1);
+}
+const JWT_SECRET_FINAL = JWT_SECRET || 'your-secret-key-change-in-production';
 
 // Helper functions
 const timestampToISO = (timestamp) => {
@@ -62,7 +112,37 @@ const timestampToISO = (timestamp) => {
 };
 
 const isoToTimestamp = (isoString) => {
-  return Timestamp.fromDate(new Date(isoString));
+  if (!isoString) return Timestamp.now();
+  try {
+    return Timestamp.fromDate(new Date(isoString));
+  } catch (error) {
+    console.warn('Invalid ISO string for timestamp:', isoString);
+    return Timestamp.now();
+  }
+};
+
+// Clean data before sending to Firebase (remove null/undefined values)
+const cleanFirestoreData = (data) => {
+  const cleaned = {};
+  for (const [key, value] of Object.entries(data)) {
+    // Skip null and undefined values
+    if (value === null || value === undefined) {
+      continue;
+    }
+    // Handle nested objects
+    if (typeof value === 'object' && !(value instanceof Date) && !(value instanceof Timestamp)) {
+      if (Array.isArray(value)) {
+        cleaned[key] = value.map(item => 
+          typeof item === 'object' && item !== null ? cleanFirestoreData(item) : item
+        );
+      } else {
+        cleaned[key] = cleanFirestoreData(value);
+      }
+    } else {
+      cleaned[key] = value;
+    }
+  }
+  return cleaned;
 };
 
 const docToUser = (docData) => {
@@ -92,7 +172,7 @@ const authenticateToken = (req, res, next) => {
     return res.status(401).json({ error: 'Access token required' });
   }
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
+  jwt.verify(token, JWT_SECRET_FINAL, (err, user) => {
     if (err) {
       return res.status(403).json({ error: 'Invalid or expired token' });
     }
@@ -152,6 +232,13 @@ const docToDevice = (docData) => {
 // Initialize database (public endpoint for first-time setup)
 // This endpoint creates collections and default data
 app.post('/api/init', async (req, res) => {
+  if (!db) {
+    return res.status(503).json({ 
+      error: 'Firebase not initialized. Please check your Firebase configuration variables.',
+      details: 'Missing or invalid Firebase environment variables'
+    });
+  }
+  
   try {
     const results = {
       users: { created: 0, exists: false },
@@ -257,6 +344,13 @@ app.post('/api/auth/init', async (req, res) => {
 
 // Login endpoint
 app.post('/api/auth/login', async (req, res) => {
+  if (!db) {
+    return res.status(503).json({ 
+      error: 'Firebase not initialized. Please check your Firebase configuration variables.',
+      details: 'Missing or invalid Firebase environment variables'
+    });
+  }
+  
   try {
     const { username, password } = req.body;
 
@@ -300,7 +394,7 @@ app.post('/api/auth/login', async (req, res) => {
         role: user.role,
         name: user.name,
       },
-      JWT_SECRET,
+      JWT_SECRET_FINAL,
       { expiresIn: '7d' } // Token expires in 7 days
     );
 
@@ -327,6 +421,12 @@ app.get('/api/auth/verify', authenticateToken, (req, res) => {
 
 // Get all users (protected - requires authentication)
 app.get('/api/users', authenticateToken, async (req, res) => {
+  if (!db) {
+    return res.status(503).json({ 
+      error: 'Firebase not initialized. Please check your Firebase configuration variables.'
+    });
+  }
+  
   try {
     const usersRef = collection(db, COLLECTIONS.USERS);
     const querySnapshot = await getDocs(usersRef);
@@ -402,10 +502,15 @@ async function initializeDefaultUsers() {
 
   for (const user of defaultUsers) {
     try {
-      const docRef = await addDoc(usersRef, user);
+      const cleanedUser = cleanFirestoreData(user);
+      const docRef = await addDoc(usersRef, cleanedUser);
       createdUsers.push({ ...user, id: docRef.id, createdAt: new Date().toISOString() });
     } catch (error) {
       console.error('Error creating default user:', error);
+      console.error('User data:', user);
+      if (error.message) {
+        console.error('Error message:', error.message);
+      }
     }
   }
 
@@ -452,10 +557,11 @@ app.post('/api/users', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { id, createdAt, ...userData } = req.body;
     const usersRef = collection(db, COLLECTIONS.USERS);
-    const docRef = await addDoc(usersRef, {
+    const cleanedData = cleanFirestoreData({
       ...userData,
       createdAt: Timestamp.now(),
     });
+    const docRef = await addDoc(usersRef, cleanedData);
     
     const newUser = {
       ...userData,
@@ -498,7 +604,8 @@ app.put('/api/users/:id', authenticateToken, async (req, res) => {
       updateData.password = password; // In production, hash with bcrypt
     }
     
-    await updateDoc(userRef, updateData);
+    const cleanedData = cleanFirestoreData(updateData);
+    await updateDoc(userRef, cleanedData);
     res.json({ success: true });
   } catch (error) {
     console.error('Error updating user:', error);
@@ -645,15 +752,18 @@ app.post('/api/devices', authenticateToken, async (req, res) => {
     const devicesRef = collection(db, COLLECTIONS.DEVICES);
     const now = Timestamp.now();
     
-    const docRef = await addDoc(devicesRef, {
+    const deviceToSave = {
       ...deviceData,
       reports: (deviceData.reports || []).map((r) => ({
         ...r,
-        createdAt: isoToTimestamp(r.createdAt),
+        createdAt: r.createdAt ? isoToTimestamp(r.createdAt) : now,
       })),
       createdAt: now,
       updatedAt: now,
-    });
+    };
+    
+    const cleanedData = cleanFirestoreData(deviceToSave);
+    const docRef = await addDoc(devicesRef, cleanedData);
     
     res.json({
       ...deviceData,
@@ -681,11 +791,12 @@ app.put('/api/devices/:id', authenticateToken, async (req, res) => {
     if (updates.reports) {
       firestoreUpdates.reports = updates.reports.map((r) => ({
         ...r,
-        createdAt: isoToTimestamp(r.createdAt),
+        createdAt: r.createdAt ? isoToTimestamp(r.createdAt) : Timestamp.now(),
       }));
     }
     
-    await updateDoc(deviceRef, firestoreUpdates);
+    const cleanedData = cleanFirestoreData(firestoreUpdates);
+    await updateDoc(deviceRef, cleanedData);
     res.json({ success: true });
   } catch (error) {
     console.error('Error updating device:', error);
@@ -711,13 +822,16 @@ app.post('/api/devices/:id/reports', authenticateToken, async (req, res) => {
     
     const updatedReports = [...device.reports, report];
     
-    await updateDoc(deviceRef, {
+    const updateData = {
       reports: updatedReports.map((r) => ({
         ...r,
-        createdAt: isoToTimestamp(r.createdAt),
+        createdAt: r.createdAt ? isoToTimestamp(r.createdAt) : Timestamp.now(),
       })),
       updatedAt: Timestamp.now(),
-    });
+    };
+    
+    const cleanedData = cleanFirestoreData(updateData);
+    await updateDoc(deviceRef, cleanedData);
     
     res.json({ success: true });
   } catch (error) {
