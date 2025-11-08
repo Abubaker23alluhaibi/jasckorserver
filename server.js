@@ -852,10 +852,40 @@ app.delete('/api/devices/:id', authenticateToken, requireAdmin, async (req, res)
   }
 });
 
+// ============ ROOT ROUTE ============
+
+app.get('/', (req, res) => {
+  res.json({
+    name: 'JOSCK System Backend API',
+    version: '1.0.0',
+    status: 'running',
+    message: 'Welcome to JOSCK System API',
+    endpoints: {
+      health: '/api/health',
+      login: 'POST /api/auth/login',
+      init: 'POST /api/init',
+      users: 'GET /api/users',
+      devices: 'GET /api/devices',
+      documentation: 'See README.md for full API documentation'
+    },
+    server: {
+      url: process.env.RAILWAY_PUBLIC_DOMAIN 
+        ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
+        : `http://localhost:${PORT}`,
+      environment: process.env.NODE_ENV || 'development'
+    }
+  });
+});
+
 // ============ HEALTH CHECK ============
 
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', message: 'Server is running' });
+  res.json({ 
+    status: 'ok', 
+    message: 'Server is running',
+    timestamp: new Date().toISOString(),
+    firebase: db ? 'connected' : 'not initialized'
+  });
 });
 
 // Start server
