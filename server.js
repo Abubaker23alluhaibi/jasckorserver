@@ -15,14 +15,59 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware
 // CORS configuration
-const allowedOrigins = process.env.NODE_ENV === 'production' 
-  ? [
-      'https://web-production-83e93.up.railway.app',
-      'https://josck-system.vercel.app',
-      process.env.FRONTEND_URL || 'https://josck-system.vercel.app'
-    ].filter(Boolean)
-  : ['http://localhost:5173', 'http://localhost:3000', 'http://127.0.0.1:5173'];
+// Check if we're in production (Railway sets PORT automatically, so we check for that or NODE_ENV)
+const isProduction = process.env.NODE_ENV === 'production' || process.env.RAILWAY_ENVIRONMENT || process.env.PORT;
 
+// Always include both production and development origins for safety
+const allowedOrigins = [
+  'https://web-production-83e93.up.railway.app',
+  'https://josck-system.vercel.app',
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'http://127.0.0.1:5173',
+  process.env.FRONTEND_URL
+].filter(Boolean);
+
+// Log allowed origins for debugging
+console.log('🌐 CORS Configuration:');
+console.log('   Environment:', isProduction ? 'production' : 'development');
+console.log('   Allowed Origins:', allowedOrigins);
+
+// CORS middleware with explicit OPTIONS handling
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  
+  // Handle preflight requests (OPTIONS)
+  if (req.method === 'OPTIONS') {
+    if (origin && allowedOrigins.includes(origin)) {
+      res.header('Access-Control-Allow-Origin', origin);
+      res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+      res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.header('Access-Control-Allow-Credentials', 'true');
+      res.header('Access-Control-Max-Age', '86400'); // 24 hours
+      return res.sendStatus(200);
+    } else if (!origin) {
+      // Allow requests with no origin
+      return res.sendStatus(200);
+    } else {
+      console.warn('⚠️  CORS preflight blocked origin:', origin);
+      return res.status(403).json({ error: 'Not allowed by CORS' });
+    }
+  }
+  
+  // Handle regular requests
+  if (origin && allowedOrigins.includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Credentials', 'true');
+  } else if (!origin) {
+    // Allow requests with no origin
+    res.header('Access-Control-Allow-Origin', '*');
+  }
+  
+  next();
+});
+
+// Also use cors middleware as backup
 app.use(cors({
   origin: (origin, callback) => {
     // Allow requests with no origin (like mobile apps or curl requests)
@@ -31,6 +76,7 @@ app.use(cors({
     if (allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
+      console.warn('⚠️  CORS blocked origin:', origin);
       callback(new Error('Not allowed by CORS'));
     }
   },
@@ -38,6 +84,7 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
+
 app.use(express.json());
 
 // Firebase configuration
